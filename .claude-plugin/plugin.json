@@ -1,0 +1,12 @@
+{
+  "name": "upkeep",
+  "description": "One-command update for your entire Claude Code ecosystem",
+  "version": "1.0.0",
+  "author": {
+    "name": "Allen Huang"
+  },
+  "homepage": "https://github.com/allenhuang0/claude-upkeep",
+  "repository": "https://github.com/allenhuang0/claude-upkeep",
+  "license": "MIT",
+  "keywords": ["update", "upgrade", "maintenance", "plugins", "mcp", "brew", "npm"]
+}

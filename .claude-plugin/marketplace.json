@@ -1,0 +1,16 @@
+{
+  "name": "claude-upkeep",
+  "owner": {
+    "name": "Allen Huang"
+  },
+  "metadata": {
+    "description": "Keep your Claude Code ecosystem up to date with a single command"
+  },
+  "plugins": [
+    {
+      "name": "upkeep",
+      "source": "./",
+      "description": "One-command update for your entire Claude Code ecosystem"
+    }
+  ]
+}
