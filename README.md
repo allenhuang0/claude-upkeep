@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">claude-upkeep</h1>
   <p align="center"><strong>One command to update your entire Claude Code ecosystem</strong></p>
-  <p align="center">Plugins &middot; npm &middot; Homebrew &middot; MCP Servers &middot; CLI &mdash; all in sync</p>
+  <p align="center">Plugins &middot; Skills &middot; npm &middot; Homebrew &middot; MCP Servers &middot; uv &middot; CLI &mdash; all in sync</p>
   <p align="center">
     <a href="#quick-start">Quick Start</a> |
     <a href="#features">Features</a> |
@@ -11,7 +11,7 @@
   <p align="center">
     <img src="https://img.shields.io/badge/Claude_Code-Plugin-blue?style=flat-square" alt="Claude Code Plugin" />
     <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License MIT" />
-    <img src="https://img.shields.io/badge/Dependencies-Zero-brightgreen?style=flat-square" alt="Zero Dependencies" />
+    <img src="https://img.shields.io/badge/Requires-jq-brightgreen?style=flat-square" alt="Requires jq" />
     <img src="https://img.shields.io/badge/PRs-Welcome-orange?style=flat-square" alt="PRs Welcome" />
   </p>
 </p>
@@ -20,18 +20,21 @@
 
 ## Why claude-upkeep?
 
-Claude Code's power comes from its ecosystem — plugins, MCP servers, npm tools, Homebrew packages, and the CLI itself. But keeping everything up to date means remembering six different commands with six different syntaxes, scattered across six different package managers. Miss one and you're debugging stale versions instead of shipping code.
+Claude Code's power comes from its ecosystem — plugins, agent skills, MCP servers, npm tools, Homebrew packages, uv tools, and the CLI itself. But keeping everything up to date means remembering a dozen commands scattered across as many package managers. Miss one and you're debugging stale versions instead of shipping code.
 
 **claude-upkeep** collapses all of that into a single slash command.
 
-**Before:** 6 different commands, each with its own syntax, each easy to forget.
+**Before:** a dozen commands, each with its own syntax, each easy to forget.
 
 ```
-claude plugins update
-npm update -g @anthropic-ai/claude-code
+claude plugin marketplace update && claude plugin update <each plugin>
+npx skills update -g
+npm install -g <pkg>@latest
 brew upgrade
-cd ~/.claude/mcp-servers/foo && git pull
-pip install --upgrade bar-mcp
+cd ~/mcp-servers/foo && git pull && uv sync
+uv tool upgrade --all
+rustup update
+claude update
 # ...did I miss one?
 ```
 
@@ -41,35 +44,30 @@ pip install --upgrade bar-mcp
 
 ## Features
 
-- 🔄 **One-command updates** — plugins, npm globals, Homebrew packages, MCP servers, and CLI, all at once
+- 🔄 **One-command updates** — marketplaces, plugins, agent skills, npm globals, Homebrew, MCP servers, uv tools, toolchains, and the CLI, all at once
 - 🔍 **Safe mode** — run `/upkeep:check` to preview every available update before committing to changes
 - 📊 **Structured reports** — Markdown tables with version diffs so you see exactly what changed
 - 🛡️ **Fault tolerant** — a single component failure never blocks the rest of your updates
-- 🪶 **Zero dependencies** — pure SKILL.md implementation, no scripts or runtime needed
+- 🧯 **Safe by default** — Python/conda environments and macOS updates are reported, never applied; git MCP checkouts with local changes are skipped
+- 🪶 **Lightweight** — SKILL.md instructions plus two small read-only bash helpers (needs `jq`; `gh` optional)
 
 ---
 
 ## Quick Start
 
-**1. Add the marketplace**
+**1. Install the plugin**
 
 ```
-/install-plugin marketplace add allenhuang0/claude-upkeep
+/plugin install upkeep --marketplace allenhuang0/claude-upkeep
 ```
 
-**2. Install the plugin**
-
-```
-/install-plugin upkeep@claude-upkeep
-```
-
-**3. Reload plugins**
+**2. Reload plugins**
 
 ```
 /reload-plugins
 ```
 
-Then just run `/upkeep` and you're done.
+Then run `/upkeep:check` to preview, or `/upkeep` to update everything.
 
 ---
 
@@ -86,6 +84,22 @@ Then just run `/upkeep` and you're done.
 
 | Component | Detection | Update Method |
 |-----------|-----------|---------------|
+| Claude Code CLI | `claude --version` vs `npm view` | `claude update` |
+| Plugin marketplaces | `git fetch` + commit count | `claude plugin marketplace update` |
+| Claude Code plugins | `installed_plugins.json` | `claude plugin update` |
+| Agent skills (`npx skills`) | lock-file hash vs GitHub tree SHA | `npx skills update -g` |
+| npm global packages | `npm outdated -g` | `npm install -g <pkg>@latest` |
+| Homebrew formulae + casks | `brew outdated --json=v2` | `brew upgrade` |
+| MCP servers via `npx` | npx cache version vs `npm view` | clear stale npx cache |
+| MCP servers from git checkouts | `git fetch` + log compare | `git pull --ff-only` + rebuild |
+| uv tools | `uv tool list --outdated` | `uv tool upgrade` |
+| Rust / Bun toolchains | `rustup check`, `bun --version` | `rustup update`, `bun upgrade` |
+| Python / conda environments | `pip list --outdated` per env | report only |
+| macOS | `softwareupdate -l` | report only |
+
+MCP servers are read from `~/.claude.json` (user and project scope).
+
+-----------|-----------|---------------|
 | Claude Code Plugins | `claude plugins list` | `claude plugins update` |
 | npm Global Packages | `npm outdated -g` | `npm update -g` |
 | Homebrew Packages | `brew outdated` | `brew upgrade` |
@@ -117,7 +131,7 @@ Currently optimized for macOS. Linux support is planned. Because claude-upkeep i
 <summary><strong>What about npm major version upgrades?</strong></summary>
 <br>
 
-`npm update -g` follows semver — it won't jump major versions unless the package's `latest` tag points there. If you're concerned, run `/upkeep:check` first to review what would change before applying updates.
+npm globals are installed as `<pkg>@latest`, so major versions are included. Run `/upkeep:check` first to review what would change before applying updates.
 
 </details>
 

@@ -1,208 +1,174 @@
 ---
 name: check
 description: >
-  Check for available updates across the Claude Code ecosystem without
-  making changes. Lists outdated plugins, npm globals, Homebrew packages,
-  MCP servers, and CLI version. Use when the user wants to see what
-  needs updating before committing.
+  Read-only scan for available updates across the Claude Code ecosystem:
+  CLI, plugin marketplaces, agent skills (npx skills), npm globals, Homebrew,
+  MCP servers (npx + git), uv tools, Python/conda envs, Rust/Bun toolchains
+  and macOS. Changes nothing. Use before /upkeep to preview what would change.
 disable-model-invocation: true
 ---
 
-# /upkeep:check — Check for Available Updates (Read-Only)
+# /upkeep:check — Scan for Updates (Read-Only)
 
-Scan the Claude Code ecosystem for outdated components. **DO NOT execute
-any updates** — this skill is strictly read-only.
+**Never install, upgrade, pull, link or delete anything here.** The only
+side effects allowed are metadata refreshes: `git fetch` (remote-tracking
+refs only) and Homebrew's automatic index update.
 
-Initialize two counters: `outdated = 0`, `up_to_date = 0`.
-Initialize an empty report table rows list.
+`/upkeep` runs the **Scan** section of this file as its Phase 1, so record
+exactly the fields each step names.
 
----
-
-## Scan Environment
-
-Run the following detection commands. Use **parallel Bash tool calls** for
-steps 1 through 6 — they are independent of each other.
-
-### 1. Plugins
-
-Run:
-
-```bash
-claude plugins list
-```
-
-Parse the output to extract each installed plugin's identifier in the form
-`<name>@<marketplace>`. Record every identifier.
-
-If the command fails or returns no plugins, record that zero plugins are
-installed and move on.
-
-For each plugin, run:
-
-```bash
-claude plugins update --dry-run <name>@<marketplace> 2>/dev/null || true
-```
-
-If dry-run is not supported, record the plugin as `up to date` (cannot
-determine remote version). If the output indicates an update is available,
-record it as `outdated` with the current and latest versions.
-
-### 2. npm Global Packages
-
-Run:
-
-```bash
-npm outdated -g 2>/dev/null || true
-```
-
-**Note:** `npm outdated -g` exits with code 1 when outdated packages exist.
-That is normal — not an error. The `|| true` prevents it from being treated
-as a failure.
-
-The output is a table with columns: Package, Current, Wanted, Latest, Location.
-Extract each row's **Package**, **Current**, and **Latest** values. A package
-is outdated when Current differs from Latest.
-
-If the output is empty, all npm globals are up to date — there is nothing to
-record for this category.
-
-### 3. Homebrew Packages
-
-Run:
-
-```bash
-brew outdated --verbose 2>/dev/null || true
-```
-
-Each line of output is an outdated package with version info. Extract the
-package names, current versions, and available versions. If the output is
-empty, everything is current.
-
-### 4. Git-Based MCP Servers
-
-Read the file `~/.claude/mcp.json`. If it does not exist, skip this step.
-
-Parse the JSON. For each server entry, extract the `command` field. Resolve
-the directory containing that command binary (use `dirname` on the path, or
-for commands like `node`, look at the `args` array for a script path and use
-its parent directory).
-
-For each candidate directory, test if it is inside a git repository:
-
-```bash
-git -C <dir> rev-parse --is-inside-work-tree 2>/dev/null
-```
-
-If yes, get the repo root:
-
-```bash
-git -C <dir> rev-parse --show-toplevel
-```
-
-Then fetch and check for updates. Try `origin/main` first, fall back to
-`origin/master`:
-
-```bash
-git -C <repo-path> fetch origin 2>/dev/null
-git -C <repo-path> log HEAD..origin/main --oneline 2>/dev/null || \
-  git -C <repo-path> log HEAD..origin/master --oneline 2>/dev/null
-```
-
-If the log output is non-empty, updates are available. Record the server
-name (from mcp.json key), current short HEAD commit, and mark as `outdated`.
-If the log is empty, the server is `up to date` — record the current HEAD.
-
-### 5. pip-Based MCP Servers
-
-From `~/.claude/mcp.json` (already read in step 4 — reuse the data), identify
-servers whose `command` path contains `.venv/bin/` or whose command resolves
-to a pip-installed package.
-
-For each candidate, derive the package name:
-- If the command path contains `.venv/bin/<name>`, the package name is `<name>`.
-- Alternatively, use the server name from the mcp.json key as a hint.
-
-Check installed vs latest version:
-
-```bash
-pip show <package-name> 2>/dev/null | grep -i '^Version:'
-pip index versions <package-name> 2>/dev/null | head -1
-```
-
-If `pip show` fails, try using the venv's pip directly:
-
-```bash
-<venv-path>/bin/pip show <package-name> 2>/dev/null | grep -i '^Version:'
-```
-
-Compare the installed version to the latest. If they differ, mark as
-`outdated`. If commands fail (package not on PyPI, etc.), skip that server.
-
-### 6. Claude Code CLI
-
-Run these two commands in the same Bash call:
-
-```bash
-claude --version 2>/dev/null
-npm view @anthropic-ai/claude-code version 2>/dev/null
-```
-
-The first gives the installed version, the second gives the latest published
-version. Compare them. If they differ, the CLI is outdated.
+`SCRIPTS` below means `<this skill's base directory>/../../scripts` — the
+base directory is shown when the skill loads. Both scripts need `jq`.
 
 ---
 
-## Output Report
+## Scan
 
-After all scans complete, output a Markdown report in **exactly** this
-format:
+Run steps 1–10 as **parallel Bash calls** — they are independent. When a
+step's tool is not installed (`command -v` fails), skip the step silently.
+
+For every component record: **name, type, current, latest, status, note**,
+plus any extra field a step names.
+
+### 1. Claude Code CLI — type `CLI`
+
+```bash
+claude --version 2>/dev/null; npm view @anthropic-ai/claude-code version 2>/dev/null
+```
+
+Outdated when the installed version differs from the published one.
+
+### 2. Plugin marketplaces and plugins — type `marketplace`
+
+```bash
+jq -r 'to_entries[] | [.key, .value.installLocation, .value.lastUpdated] | @tsv' ~/.claude/plugins/known_marketplaces.json |
+while IFS=$'\t' read -r name loc updated; do
+  git -C "$loc" rev-parse --git-dir >/dev/null 2>&1 || { printf '%s\tnot git %s\n' "$name" "${updated%%T*}"; continue; }
+  git -C "$loc" fetch -q 2>/dev/null || { printf '%s\tfetch failed\n' "$name"; continue; }
+  printf '%s\t%s\n' "$name" "$(git -C "$loc" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo '?')"
+done
+jq -r '.plugins | to_entries[] | .key as $id | .value[]
+       | [$id, .scope, .version, (.gitCommitSha // "-"), (.projectPath // "-")] | @tsv' \
+  ~/.claude/plugins/installed_plugins.json
+```
+
+- A marketplace with N > 0 new commits is `outdated`, note `N new commits`.
+  `fetch failed` → `unknown`.
+- `not git <date>` (archive-installed marketplace, no commit count) →
+  status `unknown`, note `last refreshed <date>`.
+- Record every installed plugin as **id, scope, version, gitCommitSha,
+  projectPath** — `/upkeep` needs them. In this check, plugins are not
+  reported one by one: name the installed plugins of an outdated
+  marketplace in its note.
+
+### 3. Agent skills (`npx skills`) — type `skill`
+
+```bash
+bash "$SCRIPTS/scan-skills.sh"
+```
+
+TSV columns: name, source, status, local_ref, remote_ref. Status is
+`up to date`, `outdated`, `gone upstream` or `unknown`. No output means no
+skills are installed this way. Do **not** use `npx skills check` — it
+applies updates.
+
+### 4. npm global packages — type `npm`
+
+```bash
+npm outdated -g --json 2>/dev/null || true
+npm ls -g --depth=0 --json 2>/dev/null | jq '.dependencies | length'
+```
+
+`npm outdated` exits 1 when something is outdated — normal. Each key is a
+package with `current` and `latest`. Skip `@anthropic-ai/claude-code`
+(step 1 covers it). The second line is the total, for the summary count.
+
+### 5. Homebrew — type `brew`
+
+```bash
+brew outdated --json=v2 2>/dev/null
+```
+
+Read `.formulae[]` and `.casks[]`: current = last of
+`installed_versions`, latest = `current_version`. Record whether each item
+is a cask (needed by `/upkeep`). `pinned: true` → status `pinned`.
+
+### 6. MCP servers — type `MCP (npx)` or `MCP (git)`
+
+```bash
+bash "$SCRIPTS/scan-mcp.sh"
+```
+
+TSV columns: name, kind, target, current, latest, status, note, path.
+Reads user- and project-scope servers from `~/.claude.json`. Keep **note**
+and **path** — `/upkeep` needs them. Status `auto` (resolves `@latest` on
+every launch) counts as up to date.
+
+### 7. uv tools — type `uv tool`
+
+```bash
+uv tool list --outdated 2>/dev/null
+```
+
+Each tool line reads `<name> v<current> [latest: <latest>]`; lines starting
+with `- ` are its executables (ignore). Every listed tool is outdated. MCP
+servers installed as uv tools show up here.
+
+### 8. Python / conda environments — type `python env` (report only)
+
+```bash
+for p in $(conda env list --json 2>/dev/null | jq -r '.envs[]'); do
+  printf '%s\t%s\n' "$p" "$("$p/bin/python" -m pip list --outdated --format=json 2>/dev/null | jq length)" &
+done; wait
+```
+
+One row per environment: name = env directory name (`base` for the conda
+root), current = `N packages outdated`, status `report only` when N > 0.
+Upgrading a whole environment can break it, so upkeep never does.
+
+### 9. Toolchains — type `toolchain`
+
+```bash
+command -v rustup >/dev/null && rustup check 2>/dev/null
+b=$(command -v bun) && case "$b" in "$(brew --prefix 2>/dev/null)"/*) ;; *) echo "bun $(bun --version) $(npm view bun version 2>/dev/null)";; esac
+```
+
+`rustup check` prints `<toolchain> - update available : A -> B` for each
+outdated item. Bun is checked only when it is not Homebrew-managed (step 5
+covers that case).
+
+### 10. macOS — type `macOS` (report only)
+
+```bash
+softwareupdate -l 2>&1
+```
+
+Each `* Label: <name>` is a pending update → status `report only`.
+These may need a restart, so upkeep never installs them.
+
+---
+
+## Report
+
+Output **exactly** this format:
 
 ```
 ## Update Check
 
-| Component | Type | Current | Latest | Status |
-|-----------|------|---------|--------|--------|
-| <name> | <type> | <current> | <latest> | <status> |
-...
+| Component | Type | Current | Latest | Status | Note |
+|-----------|------|---------|--------|--------|------|
+| <name> | <type> | <current> | <latest> | <status> | <note> |
 
-**Summary:** X outdated, Y up to date
+**Summary:** X outdated · Y report only · Z up to date (<n> skill, <n> npm, …)
 
-> Run `/upkeep` to update all components.
+> Run `/upkeep` to apply updates.
 ```
 
-Rules for the table:
-- Include **every** component discovered during scanning, whether outdated
-  or not.
-- **Type** is one of: `plugin`, `npm`, `brew`, `git MCP`, `pip MCP`, `CLI`.
-- **Status** is one of: `outdated`, `up to date`.
-- For `up to date` items: Current and Latest show the same version.
-- For `outdated` items: Current shows installed version, Latest shows the
-  available version.
-- For git MCP servers, use short commit hashes as version identifiers.
-
-After the table, output the **Summary** line with the two counters.
-
-Then always append:
-```
-> Run `/upkeep` to update all components.
-```
-
-If **nothing was found at all** (no components detected), output instead:
-```
-## Update Check
-
-No managed components detected. Nothing to check.
-```
-
-If **everything is up to date**, output instead:
-```
-## Update Check
-
-| Component | Type | Current | Latest | Status |
-|-----------|------|---------|--------|--------|
-...
-
-**Summary:** 0 outdated, Y up to date
-
-Everything is up to date. No updates available.
-```
+Rules:
+- List every component that is **not** up to date; count up-to-date ones in
+  the summary only, broken down by type.
+- Order rows by step (CLI first, macOS last).
+- `gone upstream` skill → note `removed or moved upstream — npx skills remove -g <name>`.
+- `MCP (git)` with `local changes` in its note → append `/upkeep will skip it`.
+- If nothing is outdated, replace the table with
+  `Everything is up to date.` and still list any `report only` rows.

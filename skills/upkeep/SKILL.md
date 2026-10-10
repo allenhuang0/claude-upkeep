@@ -1,283 +1,193 @@
 ---
 name: upkeep
 description: >
-  Auto-update all Claude Code ecosystem components — plugins, npm globals,
-  Homebrew packages, git/pip MCP servers, and Claude Code CLI itself.
-  Use when the user wants to update everything, keep tools current,
-  or says "update all".
+  Update the whole Claude Code ecosystem in one go: CLI, plugin marketplaces
+  and plugins, agent skills (npx skills), npm globals, Homebrew, MCP servers
+  (npx cache + git checkouts), uv tools and Rust/Bun toolchains. Python envs
+  and macOS updates are reported, never applied. Use when the user says
+  "update all" or wants everything current.
 disable-model-invocation: true
 ---
 
-# /upkeep — Auto-Update All Components
+# /upkeep — Update Everything
 
-Follow the three phases below in order. Track every component you discover
-so you can build the final report.
-
-Initialize three counters: `updated = 0`, `latest = 0`, `failed = 0`.
-Initialize an empty report table rows list.
-
----
-
-## Phase 1: Scan Environment
-
-Run the following detection commands. Use **parallel Bash tool calls** for
-steps 1 through 6 — they are independent of each other.
-
-### 1. Plugins
-
-Run:
-
-```bash
-claude plugins list
-```
-
-Parse the output to extract each installed plugin's identifier in the form
-`<name>@<marketplace>`. Record every identifier for Phase 2.
-
-If the command fails or returns no plugins, record that zero plugins are
-installed and move on.
-
-### 2. npm Global Packages
-
-Run:
-
-```bash
-npm outdated -g 2>/dev/null || true
-```
-
-**Note:** `npm outdated -g` exits with code 1 when outdated packages exist.
-That is normal — not an error. The `|| true` prevents it from being treated
-as a failure.
-
-The output is a table with columns: Package, Current, Wanted, Latest, Location.
-Extract each row's **Package**, **Current**, and **Latest** values. A package
-is outdated when Current differs from Latest.
-
-If the output is empty, all npm globals are up to date.
-
-### 3. Homebrew Packages
-
-Run:
-
-```bash
-brew outdated 2>/dev/null || true
-```
-
-Each line of output is an outdated package name (possibly with version info
-after a space). Extract the package names. If the output is empty, everything
-is current.
-
-### 4. Git-Based MCP Servers
-
-Read the file `~/.claude/mcp.json`. If it does not exist, skip this step.
-
-Parse the JSON. For each server entry, extract the `command` field. Resolve
-the directory containing that command binary (use `dirname` on the path, or
-for commands like `node`, look at the `args` array for a script path and use
-its parent directory).
-
-For each candidate directory, test if it is inside a git repository:
-
-```bash
-git -C <dir> rev-parse --is-inside-work-tree 2>/dev/null
-```
-
-If yes, get the repo root:
-
-```bash
-git -C <dir> rev-parse --show-toplevel
-```
-
-Then fetch and check for updates. Try `origin/main` first, fall back to
-`origin/master`:
-
-```bash
-git -C <repo-path> fetch origin 2>/dev/null
-git -C <repo-path> log HEAD..origin/main --oneline 2>/dev/null || \
-  git -C <repo-path> log HEAD..origin/master --oneline 2>/dev/null
-```
-
-If the log output is non-empty, updates are available. Record the repo path,
-the server name (from mcp.json key), the current short HEAD commit, and the
-remote branch name.
-
-### 5. pip-Based MCP Servers
-
-From `~/.claude/mcp.json` (already read in step 4 — reuse the data), identify
-servers whose `command` path contains `.venv/bin/` or whose command resolves
-to a pip-installed package.
-
-For each candidate, derive the package name:
-- If the command path contains `.venv/bin/<name>`, the package name is `<name>`.
-- Alternatively, use the server name from the mcp.json key as a hint.
-
-Check installed vs latest version:
-
-```bash
-pip show <package-name> 2>/dev/null | grep -i '^Version:'
-pip index versions <package-name> 2>/dev/null | head -1
-```
-
-If `pip show` fails, try using the venv's pip directly:
-
-```bash
-<venv-path>/bin/pip show <package-name> 2>/dev/null | grep -i '^Version:'
-```
-
-Compare the installed version to the latest. If they differ, mark as outdated.
-If commands fail (package not on PyPI, etc.), skip that server.
-
-### 6. Claude Code CLI
-
-Run these two commands in the same Bash call:
-
-```bash
-claude --version 2>/dev/null
-npm view @anthropic-ai/claude-code version 2>/dev/null
-```
-
-The first gives the installed version, the second gives the latest published
-version. Compare them. If they differ, the CLI is outdated.
+Three phases, in order. **Never ask for confirmation.** Every update is
+independent: when one fails, record the reason and carry on. For each
+component record **old, new, status, note**. Status is one of `updated`,
+`latest`, `failed`, `skipped`, `report only`.
 
 ---
 
-## Phase 2: Execute Updates
+## Phase 1: Scan
 
-Execute ALL updates below. Each update is independent — if one fails, record
-the error and continue with the rest. **Never prompt the user for
-confirmation.** Use **parallel Bash tool calls** for independent updates.
-
-For each update, record the before-version, after-version, and status.
-
-### 1. Plugins
-
-For each plugin identifier from Phase 1, run:
-
-```bash
-claude plugins update <name>@<marketplace>
-```
-
-Parse the output to determine if the plugin was updated or was already at the
-latest version. Record the old and new version if shown, or "latest" if
-already current.
-
-If the command fails, record status as "failed" with the error message.
-
-### 2. npm Global Packages
-
-If there are outdated npm packages from Phase 1, batch them into one command:
-
-```bash
-npm update -g <package1> <package2> ...
-```
-
-After the command completes, verify by running `npm list -g <package> --depth=0`
-for each package to get the new version. Record old (from Phase 1) and new
-versions.
-
-If the update command fails, record status as "failed".
-
-### 3. Homebrew Packages
-
-If there are outdated brew packages from Phase 1, batch them:
-
-```bash
-brew upgrade <package1> <package2> ...
-```
-
-After the command completes, get new versions with `brew list --versions <pkg>`
-for each package. Record old and new versions.
-
-If the upgrade fails for any package, record that package as "failed".
-
-### 4. Git-Based MCP Servers
-
-For each git repo with available updates from Phase 1, run:
-
-```bash
-git -C <repo-path> pull
-```
-
-After pull, get the new HEAD:
-
-```bash
-git -C <repo-path> rev-parse --short HEAD
-```
-
-Record old commit (from Phase 1) and new commit. If pull fails, record as
-"failed".
-
-### 5. pip-Based MCP Servers
-
-For each outdated pip package from Phase 1, run:
-
-```bash
-pip install --upgrade <package-name>
-```
-
-Or if using a venv:
-
-```bash
-<venv-path>/bin/pip install --upgrade <package-name>
-```
-
-After install, verify the new version with `pip show <package-name>`. Record
-old and new versions.
-
-### 6. Claude Code CLI
-
-Only if the CLI was outdated in Phase 1, run:
-
-```bash
-npm update -g @anthropic-ai/claude-code
-```
-
-Verify by running `claude --version` after update. Record old and new versions.
+Read `<this skill's base directory>/../check/SKILL.md` (the base directory
+is shown when the skill loads) and run its **Scan** section exactly — same
+parallel steps, same recorded fields. `SCRIPTS` there resolves to
+`<this skill's base directory>/../../scripts`. Do not print its report.
 
 ---
 
-## Phase 3: Output Report
+## Phase 2: Update
 
-After all updates complete, output a Markdown report in **exactly** this
-format:
+Run the steps below as **parallel Bash calls**, with two ordering rules:
+- 2a must finish before 2b (plugins update from the refreshed marketplaces).
+- 2k (CLI) runs last, after every `claude plugin` command has finished.
+
+Act only on components Phase 1 found outdated, except 2a/2b which always run.
+
+### 2a. Marketplaces
+
+```bash
+claude plugin marketplace update
+```
+
+Each marketplace row: `updated` (note: new commits pulled) or `latest`.
+
+### 2b. Plugins
+
+Run **sequentially** in one Bash call — concurrent runs race on
+`installed_plugins.json`. For each plugin entry recorded in Phase 1:
+
+```bash
+claude plugin update <id> -s user                              # scope user
+(cd <projectPath> && claude plugin update <id> -s <scope>)     # scope project / local
+```
+
+Then re-read `~/.claude/plugins/installed_plugins.json` and compare each
+entry's `version` and `gitCommitSha` with Phase 1: changed → `updated`,
+unchanged → `latest`, non-zero exit → `failed`.
+
+### 2c. Agent skills
+
+If any skill is `outdated`:
+
+```bash
+npx -y skills update -g -y 2>&1
+```
+
+Then re-run `bash "$SCRIPTS/scan-skills.sh"` to set each skill's final
+status. Skills still `gone upstream` stay as rows — the CLI never deletes
+them non-interactively. Note: this command also re-links every lock-file
+skill into the agent skill folders.
+
+### 2d. npm globals
+
+```bash
+npm install -g <pkg1>@latest <pkg2>@latest ...
+```
+
+`@latest` (not `npm update`) so major versions are included. Verify with
+`npm ls -g --depth=0 --json`.
+
+### 2e. Homebrew
+
+```bash
+brew upgrade --formula <formula1> <formula2> ...
+brew upgrade --cask <cask1> <cask2> ... </dev/null
+```
+
+Leave `pinned` items alone (`skipped`). Afterwards run
+`brew outdated --json=v2`: anything still listed is `failed`. A cask that
+needs `sudo` fails fast without a terminal → note
+`needs sudo — run brew upgrade --cask <name> yourself`.
+
+### 2f. MCP servers — npx
+
+For each `MCP (npx)` row with status `outdated`, delete its stale npx cache
+directory (the row's **path**, always under `~/.npm/_npx/`). It is cache
+only; npx downloads the latest version on the next launch.
+
+```bash
+rm -rf "<path>"
+```
+
+Status `updated`, new = the latest version, note `applies on next launch`.
+
+### 2g. MCP servers — git checkouts
+
+For each `MCP (git)` row with status `outdated`:
+- note contains `local changes` → `skipped`, note `local changes — pull manually`.
+- otherwise, in the repo root (the row's **path**):
+
+```bash
+git -C "<path>" pull --ff-only
+```
+
+then rebuild by what the repo contains, first match only:
+
+| Repo contains | Rebuild |
+|---|---|
+| `uv.lock` | `(cd "<path>" && uv sync)` |
+| `package.json` | `(cd "<path>" && npm install && if jq -e '.scripts.build' package.json >/dev/null; then npm run build; fi)` |
+| `requirements.txt` + `.venv/` | `"<path>/.venv/bin/pip" install -r "<path>/requirements.txt"` |
+
+New = `git -C "<path>" rev-parse --short HEAD`. Pull refused (diverged) or
+rebuild error → `failed` with a one-line reason.
+
+### 2h. uv tools
+
+```bash
+uv tool upgrade <tool1> <tool2> ...
+```
+
+Verify with `uv tool list`.
+
+### 2i. Toolchains
+
+```bash
+rustup update        # if rustup reported updates
+bun upgrade          # if bun is outdated
+```
+
+### 2j. Report-only items
+
+`python env` and `macOS` rows are never changed. Carry them over with
+status `report only`.
+
+### 2k. Claude Code CLI
+
+If outdated:
+
+```bash
+claude update
+claude --version
+```
+
+---
+
+## Phase 3: Report
+
+Output **exactly** this format:
 
 ```
 ## Update Report
 
-| Component | Type | Old | New | Status |
-|-----------|------|-----|-----|--------|
-| <name> | <type> | <old-version> | <new-version> | <status> |
-...
+| Component | Type | Old | New | Status | Note |
+|-----------|------|-----|-----|--------|------|
+| <name> | <type> | <old> | <new> | <status> | <note> |
 
-**Summary:** X updated, Y already latest, Z failed
+**Summary:** X updated · Y failed · Z skipped · W report only · V already latest
 ```
 
-Rules for the table:
-- Include **every** component discovered in Phase 1, whether updated or not.
-- **Type** is one of: `plugin`, `npm`, `brew`, `git MCP`, `pip MCP`, `CLI`.
-- **Status** is one of: `updated`, `latest`, `failed`.
-- For `updated` items: Old = previous version, New = current version.
-- For `latest` items: Old and New show the same (current) version.
-- For `failed` items: New = the error reason (keep it short, one line).
-- For git MCP servers, use short commit hashes as version identifiers.
+Rules:
+- One row per component whose final status is **not** `latest`; already
+  latest ones are counted in the summary only.
+- Order rows by type, in the Phase 2 order.
+- `failed` rows: New = `—`, Note = the short error.
+- `git` versions are short commit hashes.
 
-After the table, output the **Summary** line with the three counters.
+Then add only the notes that apply:
+- Plugins updated → `> Run /reload-plugins to apply plugin updates.`
+- MCP servers updated → `> Restart Claude Code (or reconnect in /mcp) to load the new MCP servers.`
+- CLI updated → `> Restart Claude Code to apply the CLI update.`
+- `gone upstream` skills → `> Removed upstream: <names>. Remove with npx skills remove -g <name>.`
+- `python env` rows → `> Python environments are never upgraded automatically. Upgrade deliberately, e.g. conda update -n <env> --all.`
+- `macOS` rows → `> macOS updates pending: install from System Settings → Software Update.`
 
-Then, conditionally add these notes:
+If Phase 1 found nothing outdated and nothing report-only, output instead:
 
-- If **any plugins were updated**, append:
-  ```
-  > Run `/reload-plugins` to apply plugin updates.
-  ```
+```
+## Update Report
 
-- If the **CLI was updated**, append:
-  ```
-  > Restart Claude Code to apply CLI updates.
-  ```
-
-- If **nothing was outdated**, output instead:
-  ```
-  ## Update Report
-
-  Everything is up to date. No updates available.
-  ```
+Everything is up to date. No updates available.
+```
